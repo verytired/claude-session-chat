@@ -5,10 +5,13 @@ Inter-session messaging plugin for Claude Code. Send and receive messages betwee
 ## Features
 
 - **list_sessions** — View all active Claude Code sessions
-- **send_message** — Send a message to a specific session or broadcast to all
+- **send_message** — Send a message to a specific session or broadcast to all (with destination validation)
 - **read_messages** — Read unread messages
-- **message_history** — View full conversation history
+- **message_history** — View full conversation history with reply threading
+- **rename_session** — Rename your session at any time
+- **Auto-naming** — Sessions auto-named from `directory-branch` (e.g. `myapp-main`)
 - **Auto-wake** — Sessions automatically wake up when a message arrives
+- **Reliability** — File locking, zombie session purging, auto message cleanup
 
 ## Setup
 
@@ -19,11 +22,22 @@ Inter-session messaging plugin for Claude Code. Send and receive messages betwee
 /plugin install session-chat
 ```
 
-### Start sessions with names
+### Start sessions
+
+Sessions are automatically named from directory and git branch:
 
 ```bash
-CLAUDE_SESSION_CHAT_NAME=frontend claude
-CLAUDE_SESSION_CHAT_NAME=backend claude
+# Auto-named as "frontend-main"
+cd ~/projects/frontend && claude
+
+# Auto-named as "backend-develop"
+cd ~/projects/backend && claude
+```
+
+Or set a custom name:
+
+```bash
+CLAUDE_SESSION_CHAT_NAME=designer claude
 ```
 
 ## Usage
@@ -33,8 +47,13 @@ Just talk naturally:
 - "What sessions are running?" → calls `list_sessions`
 - "Ask backend if the API is ready" → calls `send_message`
 - "Any new messages?" → calls `read_messages`
+- "Rename this session to designer" → calls `rename_session`
 
 Messages are automatically detected and Claude wakes up to respond.
+
+### Reply threading
+
+Messages include IDs for threading. Claude can reply to a specific message, and the conversation thread is visible in `message_history`.
 
 ## Why session-chat over Agent Teams?
 
@@ -47,17 +66,18 @@ Claude Code has built-in [Agent Teams](https://code.claude.com/docs/en/agent-tea
 | **Independence** | Fully independent sessions. Join/leave anytime | Lead controls all teammates' lifecycle |
 | **Equality** | All sessions are peers, no hierarchy | Lead/teammate hierarchy |
 | **Cost** | Only pay for communication overhead | Each teammate maintains its own full context |
+| **Transparency** | All messages visible in terminal and inspectable as JSON | Internal coordination is opaque |
 | **Stability** | No experimental flags needed | Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` |
 
 ### Example: cross-project collaboration
 
 ```bash
-# Terminal 1: Frontend project
-CLAUDE_SESSION_CHAT_NAME=frontend claude --model sonnet
-# "Ask backend what the /api/users response schema looks like"
+# Terminal 1: Frontend project (auto-named "frontend-main")
+cd ~/projects/frontend && claude --model sonnet
+# "Ask backend-main what the /api/users response schema looks like"
 
-# Terminal 2: Backend project
-CLAUDE_SESSION_CHAT_NAME=backend claude --model haiku
+# Terminal 2: Backend project (auto-named "backend-main")
+cd ~/projects/backend && claude --model haiku
 # Automatically receives the question and responds from its own codebase context
 ```
 
@@ -65,7 +85,10 @@ CLAUDE_SESSION_CHAT_NAME=backend claude --model haiku
 
 - MCP server provides messaging tools via shared JSON files in `$TMPDIR/claude-session-chat/`
 - A `Stop` hook with `asyncRewake` polls for new messages every 3 seconds
-- When a message arrives, Claude automatically wakes and processes it
+- When a message arrives, it's marked as read and Claude automatically wakes with the message content
+- File locking prevents concurrent write corruption
+- Zombie sessions are purged via PID check on every heartbeat
+- Messages older than 24 hours are automatically cleaned up
 
 ## License
 
