@@ -10,8 +10,45 @@ import { execSync } from "child_process";
 const DATA_DIR = path.join(os.tmpdir(), "claude-session-chat");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
+const MSG_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// --- File locking ---
+function withLock(file, fn) {
+  const lockFile = `${file}.lock`;
+  const maxWait = 5000;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    try {
+      fs.writeFileSync(lockFile, String(process.pid), { flag: "wx" });
+      try {
+        return fn();
+      } finally {
+        try { fs.unlinkSync(lockFile); } catch {}
+      }
+    } catch (e) {
+      if (e.code === "EEXIST") {
+        // Check if lock holder is dead
+        try {
+          const pid = parseInt(fs.readFileSync(lockFile, "utf8"));
+          process.kill(pid, 0);
+        } catch {
+          // Lock holder is dead, remove stale lock
+          try { fs.unlinkSync(lockFile); } catch {}
+          continue;
+        }
+        // Lock holder alive, wait
+        const waitMs = 10 + Math.random() * 20;
+        const end = Date.now() + waitMs;
+        while (Date.now() < end) {} // busy wait (short)
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`Failed to acquire lock on ${file}`);
+}
 
 function readJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
@@ -19,6 +56,40 @@ function readJSON(file, fallback) {
 }
 function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+function lockedRead(file, fallback) {
+  return withLock(file, () => readJSON(file, fallback));
+}
+function lockedUpdate(file, fallback, fn) {
+  return withLock(file, () => {
+    const data = readJSON(file, fallback);
+    const result = fn(data);
+    writeJSON(file, result !== undefined ? result : data);
+    return data;
+  });
+}
+
+// --- PID check ---
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// --- Purge zombie sessions ---
+function purgeZombies() {
+  lockedUpdate(SESSIONS_FILE, {}, (sessions) => {
+    for (const [id, v] of Object.entries(sessions)) {
+      if (!isAlive(v.pid)) delete sessions[id];
+    }
+    return sessions;
+  });
+}
+
+// --- Cleanup old messages ---
+function cleanupMessages() {
+  lockedUpdate(MESSAGES_FILE, [], (msgs) => {
+    const cutoff = Date.now() - MSG_MAX_AGE_MS;
+    return msgs.filter((m) => new Date(m.timestamp).getTime() > cutoff);
+  });
 }
 
 // --- Auto-naming: env > cwd+branch ---
@@ -31,8 +102,7 @@ function autoName() {
   } catch {}
   const base = branch ? `${dir}-${branch}` : dir;
 
-  // Deduplicate: if same name exists and PID is alive, add suffix
-  const sessions = readJSON(SESSIONS_FILE, {});
+  const sessions = lockedRead(SESSIONS_FILE, {});
   let name = base;
   let suffix = 2;
   while (sessions[name] && isAlive(sessions[name].pid)) {
@@ -42,55 +112,54 @@ function autoName() {
   return name;
 }
 
-function isAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
 // Priority: env var > auto-name
 let SESSION_ID = process.env.CLAUDE_SESSION_CHAT_NAME || autoName();
 
 // Register this session
-function registerSession() {
-  const sessions = readJSON(SESSIONS_FILE, {});
+purgeZombies();
+cleanupMessages();
+lockedUpdate(SESSIONS_FILE, {}, (sessions) => {
   sessions[SESSION_ID] = {
     pid: process.pid,
     cwd: process.cwd(),
     started: new Date().toISOString(),
     lastSeen: new Date().toISOString(),
   };
-  writeJSON(SESSIONS_FILE, sessions);
-}
-registerSession();
+  return sessions;
+});
 
 // Cleanup on exit
 function cleanup() {
   try {
-    const s = readJSON(SESSIONS_FILE, {});
-    delete s[SESSION_ID];
-    writeJSON(SESSIONS_FILE, s);
+    lockedUpdate(SESSIONS_FILE, {}, (s) => { delete s[SESSION_ID]; return s; });
   } catch {}
 }
 process.on("exit", cleanup);
 process.on("SIGINT", () => { cleanup(); process.exit(); });
 process.on("SIGTERM", () => { cleanup(); process.exit(); });
 
-// Heartbeat
+// Heartbeat + periodic maintenance
 setInterval(() => {
-  const s = readJSON(SESSIONS_FILE, {});
-  if (s[SESSION_ID]) {
-    s[SESSION_ID].lastSeen = new Date().toISOString();
-    writeJSON(SESSIONS_FILE, s);
-  }
+  lockedUpdate(SESSIONS_FILE, {}, (s) => {
+    if (s[SESSION_ID]) s[SESSION_ID].lastSeen = new Date().toISOString();
+    // Purge zombies on every heartbeat
+    for (const [id, v] of Object.entries(s)) {
+      if (id !== SESSION_ID && !isAlive(v.pid)) delete s[id];
+    }
+    return s;
+  });
 }, 10000);
 
-const server = new McpServer({ name: "session-chat", version: "1.1.0" });
+// Cleanup old messages every 5 minutes
+setInterval(cleanupMessages, 5 * 60 * 1000);
+
+const server = new McpServer({ name: "session-chat", version: "1.2.0" });
 
 // List active sessions
 server.tool("list_sessions", "List all active Claude Code sessions", {}, async () => {
-  const s = readJSON(SESSIONS_FILE, {});
-  const now = Date.now();
+  const s = lockedRead(SESSIONS_FILE, {});
   const active = Object.entries(s)
-    .filter(([, v]) => now - new Date(v.lastSeen).getTime() < 60000)
+    .filter(([, v]) => isAlive(v.pid))
     .map(([id, v]) => `${id === SESSION_ID ? "* " : "  "}${id}  (cwd: ${v.cwd})`);
   return {
     content: [{
@@ -108,26 +177,27 @@ server.tool(
   "Rename this session. Updates session ID and migrates unread messages.",
   { name: z.string().describe("New session name") },
   async ({ name }) => {
-    const sessions = readJSON(SESSIONS_FILE, {});
+    const sessions = lockedRead(SESSIONS_FILE, {});
     if (sessions[name] && isAlive(sessions[name].pid)) {
       return { content: [{ type: "text", text: `Error: session "${name}" already exists.` }] };
     }
     const oldId = SESSION_ID;
 
-    // Migrate session entry
-    const entry = sessions[oldId];
-    delete sessions[oldId];
-    sessions[name] = { ...entry, lastSeen: new Date().toISOString() };
-    writeJSON(SESSIONS_FILE, sessions);
+    lockedUpdate(SESSIONS_FILE, {}, (s) => {
+      const entry = s[oldId];
+      delete s[oldId];
+      s[name] = { ...entry, lastSeen: new Date().toISOString() };
+      return s;
+    });
 
-    // Migrate pending messages addressed to old name
-    const msgs = readJSON(MESSAGES_FILE, []);
     let migrated = 0;
-    for (const m of msgs) {
-      if (m.to === oldId && !m.read) { m.to = name; migrated++; }
-      if (m.from === oldId) { m.from = name; }
-    }
-    writeJSON(MESSAGES_FILE, msgs);
+    lockedUpdate(MESSAGES_FILE, [], (msgs) => {
+      for (const m of msgs) {
+        if (m.to === oldId && !m.read) { m.to = name; migrated++; }
+        if (m.from === oldId) { m.from = name; }
+      }
+      return msgs;
+    });
 
     SESSION_ID = name;
     return {
@@ -145,16 +215,17 @@ server.tool(
   "Send a message to another Claude Code session",
   { to: z.string().describe("Target session ID or 'all' for broadcast"), message: z.string() },
   async ({ to, message }) => {
-    const msgs = readJSON(MESSAGES_FILE, []);
-    msgs.push({
-      id: crypto.randomUUID(),
-      from: SESSION_ID,
-      to,
-      message,
-      timestamp: new Date().toISOString(),
-      read: false,
+    lockedUpdate(MESSAGES_FILE, [], (msgs) => {
+      msgs.push({
+        id: crypto.randomUUID(),
+        from: SESSION_ID,
+        to,
+        message,
+        timestamp: new Date().toISOString(),
+        read: false,
+      });
+      return msgs;
     });
-    writeJSON(MESSAGES_FILE, msgs);
     return { content: [{ type: "text", text: `Message sent to ${to}.` }] };
   }
 );
@@ -165,14 +236,16 @@ server.tool(
   "Read unread messages for this session",
   { mark_read: z.boolean().optional().default(true).describe("Mark as read") },
   async ({ mark_read }) => {
-    const msgs = readJSON(MESSAGES_FILE, []);
-    const mine = msgs.filter(
-      (m) => !m.read && (m.to === SESSION_ID || m.to === "all") && m.from !== SESSION_ID
-    );
-    if (mark_read) {
-      for (const m of mine) m.read = true;
-      writeJSON(MESSAGES_FILE, msgs);
-    }
+    let mine = [];
+    lockedUpdate(MESSAGES_FILE, [], (msgs) => {
+      mine = msgs.filter(
+        (m) => !m.read && (m.to === SESSION_ID || m.to === "all") && m.from !== SESSION_ID
+      );
+      if (mark_read) {
+        for (const m of mine) m.read = true;
+      }
+      return msgs;
+    });
     if (!mine.length) return { content: [{ type: "text", text: "No new messages." }] };
     const text = mine
       .map((m) => `[${m.timestamp}] ${m.from}: ${m.message}`)
@@ -187,7 +260,7 @@ server.tool(
   "Read full message history (including read messages)",
   { limit: z.number().optional().default(20) },
   async ({ limit }) => {
-    const msgs = readJSON(MESSAGES_FILE, []);
+    const msgs = lockedRead(MESSAGES_FILE, []);
     const relevant = msgs
       .filter((m) => m.from === SESSION_ID || m.to === SESSION_ID || m.to === "all")
       .slice(-limit);
