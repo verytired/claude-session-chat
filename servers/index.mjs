@@ -1,11 +1,19 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { execSync } from "child_process";
+import { fileURLToPath } from "url";
+
+// Auto-install dependencies if missing
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+if (!fs.existsSync(path.join(__dirname, "node_modules"))) {
+  execSync("npm install --production", { cwd: __dirname, stdio: "ignore" });
+}
+
+const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+const { z } = await import("zod");
 
 const DATA_DIR = path.join(os.tmpdir(), "claude-session-chat");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
@@ -213,20 +221,39 @@ server.tool(
 server.tool(
   "send_message",
   "Send a message to another Claude Code session",
-  { to: z.string().describe("Target session ID or 'all' for broadcast"), message: z.string() },
-  async ({ to, message }) => {
+  {
+    to: z.string().describe("Target session ID or 'all' for broadcast"),
+    message: z.string(),
+    reply_to: z.string().optional().describe("Message ID this is a reply to"),
+  },
+  async ({ to, message, reply_to }) => {
+    // Validate target exists (unless broadcast)
+    if (to !== "all") {
+      const sessions = lockedRead(SESSIONS_FILE, {});
+      if (!sessions[to] || !isAlive(sessions[to].pid)) {
+        const active = Object.keys(sessions).filter((id) => isAlive(sessions[id].pid));
+        return {
+          content: [{
+            type: "text",
+            text: `Error: session "${to}" not found. Active sessions: ${active.join(", ") || "none"}`,
+          }],
+        };
+      }
+    }
+    const id = crypto.randomUUID();
     lockedUpdate(MESSAGES_FILE, [], (msgs) => {
       msgs.push({
-        id: crypto.randomUUID(),
+        id,
         from: SESSION_ID,
         to,
         message,
         timestamp: new Date().toISOString(),
         read: false,
+        ...(reply_to ? { reply_to } : {}),
       });
       return msgs;
     });
-    return { content: [{ type: "text", text: `Message sent to ${to}.` }] };
+    return { content: [{ type: "text", text: `Message sent to ${to}. (id: ${id})` }] };
   }
 );
 
@@ -248,7 +275,10 @@ server.tool(
     });
     if (!mine.length) return { content: [{ type: "text", text: "No new messages." }] };
     const text = mine
-      .map((m) => `[${m.timestamp}] ${m.from}: ${m.message}`)
+      .map((m) => {
+        const reply = m.reply_to ? ` (reply to ${m.reply_to.slice(0, 8)})` : "";
+        return `[${m.timestamp}] ${m.from}${reply}: ${m.message} [id:${m.id.slice(0, 8)}]`;
+      })
       .join("\n");
     return { content: [{ type: "text", text }] };
   }
@@ -266,7 +296,11 @@ server.tool(
       .slice(-limit);
     if (!relevant.length) return { content: [{ type: "text", text: "No message history." }] };
     const text = relevant
-      .map((m) => `[${m.timestamp}] ${m.from} → ${m.to}: ${m.message}${m.read ? "" : " (unread)"}`)
+      .map((m) => {
+        const reply = m.reply_to ? ` (reply to ${m.reply_to.slice(0, 8)})` : "";
+        const status = m.read ? "" : " (unread)";
+        return `[${m.timestamp}] ${m.from} → ${m.to}${reply}: ${m.message}${status} [id:${m.id.slice(0, 8)}]`;
+      })
       .join("\n");
     return { content: [{ type: "text", text }] };
   }
