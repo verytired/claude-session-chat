@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { execSync } from "child_process";
 
 const DATA_DIR = path.join(os.tmpdir(), "claude-session-chat");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
@@ -20,17 +21,46 @@ function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+// --- Auto-naming: env > cwd+branch ---
+function autoName() {
+  const cwd = process.cwd();
+  const dir = path.basename(cwd);
+  let branch = "";
+  try {
+    branch = execSync("git symbolic-ref --short HEAD 2>/dev/null", { cwd, encoding: "utf8" }).trim();
+  } catch {}
+  const base = branch ? `${dir}-${branch}` : dir;
+
+  // Deduplicate: if same name exists and PID is alive, add suffix
+  const sessions = readJSON(SESSIONS_FILE, {});
+  let name = base;
+  let suffix = 2;
+  while (sessions[name] && isAlive(sessions[name].pid)) {
+    name = `${base}-${suffix}`;
+    suffix++;
+  }
+  return name;
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// Priority: env var > auto-name
+let SESSION_ID = process.env.CLAUDE_SESSION_CHAT_NAME || autoName();
+
 // Register this session
-const SESSION_ID = process.env.CLAUDE_SESSION_CHAT_NAME
-  || `session-${crypto.randomBytes(3).toString("hex")}`;
-const sessions = readJSON(SESSIONS_FILE, {});
-sessions[SESSION_ID] = {
-  pid: process.pid,
-  cwd: process.cwd(),
-  started: new Date().toISOString(),
-  lastSeen: new Date().toISOString(),
-};
-writeJSON(SESSIONS_FILE, sessions);
+function registerSession() {
+  const sessions = readJSON(SESSIONS_FILE, {});
+  sessions[SESSION_ID] = {
+    pid: process.pid,
+    cwd: process.cwd(),
+    started: new Date().toISOString(),
+    lastSeen: new Date().toISOString(),
+  };
+  writeJSON(SESSIONS_FILE, sessions);
+}
+registerSession();
 
 // Cleanup on exit
 function cleanup() {
@@ -53,7 +83,7 @@ setInterval(() => {
   }
 }, 10000);
 
-const server = new McpServer({ name: "session-chat", version: "1.0.0" });
+const server = new McpServer({ name: "session-chat", version: "1.1.0" });
 
 // List active sessions
 server.tool("list_sessions", "List all active Claude Code sessions", {}, async () => {
@@ -71,6 +101,43 @@ server.tool("list_sessions", "List all active Claude Code sessions", {}, async (
     }],
   };
 });
+
+// Rename session
+server.tool(
+  "rename_session",
+  "Rename this session. Updates session ID and migrates unread messages.",
+  { name: z.string().describe("New session name") },
+  async ({ name }) => {
+    const sessions = readJSON(SESSIONS_FILE, {});
+    if (sessions[name] && isAlive(sessions[name].pid)) {
+      return { content: [{ type: "text", text: `Error: session "${name}" already exists.` }] };
+    }
+    const oldId = SESSION_ID;
+
+    // Migrate session entry
+    const entry = sessions[oldId];
+    delete sessions[oldId];
+    sessions[name] = { ...entry, lastSeen: new Date().toISOString() };
+    writeJSON(SESSIONS_FILE, sessions);
+
+    // Migrate pending messages addressed to old name
+    const msgs = readJSON(MESSAGES_FILE, []);
+    let migrated = 0;
+    for (const m of msgs) {
+      if (m.to === oldId && !m.read) { m.to = name; migrated++; }
+      if (m.from === oldId) { m.from = name; }
+    }
+    writeJSON(MESSAGES_FILE, msgs);
+
+    SESSION_ID = name;
+    return {
+      content: [{
+        type: "text",
+        text: `Renamed: ${oldId} → ${name}` + (migrated ? ` (${migrated} pending messages migrated)` : ""),
+      }],
+    };
+  }
+);
 
 // Send message
 server.tool(

@@ -2,7 +2,17 @@
 # Poll for unread messages and rewake Claude when one arrives
 DATA_DIR="${TMPDIR:-/tmp}/claude-session-chat"
 MESSAGES_FILE="$DATA_DIR/messages.json"
+SESSIONS_FILE="$DATA_DIR/sessions.json"
+
+# Find this session's name: env var or lookup by cwd in sessions.json
 SESSION_ID="${CLAUDE_SESSION_CHAT_NAME:-}"
+if [ -z "$SESSION_ID" ] && [ -f "$SESSIONS_FILE" ]; then
+  SESSION_ID=$(jq -r --arg cwd "$PWD" '
+    to_entries[]
+    | select(.value.cwd == $cwd)
+    | .key
+  ' "$SESSIONS_FILE" 2>/dev/null | head -1)
+fi
 
 [ -z "$SESSION_ID" ] && exit 0
 [ ! -d "$DATA_DIR" ] && exit 0
