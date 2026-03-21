@@ -1,0 +1,11 @@
+{
+  "name": "session-chat",
+  "description": "Inter-session messaging for Claude Code. Send and receive messages between Claude Code sessions running in different terminal panes.",
+  "version": "1.0.0",
+  "author": {
+    "name": "yutaka"
+  },
+  "license": "MIT",
+  "hooks": "hooks/hooks.json",
+  "mcpServers": ".mcp.json"
+}

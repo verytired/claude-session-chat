@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "session-chat": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/index.mjs"],
+      "env": {
+        "CLAUDE_SESSION_CHAT_NAME": "${CLAUDE_SESSION_CHAT_NAME}"
+      }
+    }
+  }
+}

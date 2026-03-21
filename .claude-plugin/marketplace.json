@@ -1,0 +1,14 @@
+{
+  "name": "session-chat",
+  "owner": {
+    "name": "yutaka"
+  },
+  "plugins": [
+    {
+      "name": "session-chat",
+      "source": "./..",
+      "description": "Inter-session messaging for Claude Code",
+      "version": "1.0.0"
+    }
+  ]
+}
