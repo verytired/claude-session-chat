@@ -15,7 +15,7 @@ Inter-session messaging plugin for Claude Code. Send and receive messages betwee
 ### Install via plugin
 
 ```
-/plugin marketplace add yutakakn/claude-session-chat
+/plugin marketplace add verytired/claude-session-chat
 /plugin install session-chat
 ```
 
