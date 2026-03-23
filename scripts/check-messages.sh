@@ -18,6 +18,22 @@ fi
 [ -z "$SESSION_ID" ] && exit 0
 [ ! -d "$DATA_DIR" ] && exit 0
 
+# PID file for deduplication: kill any existing poller for this session before starting
+PID_FILE="$DATA_DIR/poller-${SESSION_ID}.pid"
+if [ -f "$PID_FILE" ]; then
+  old_pid=$(cat "$PID_FILE" 2>/dev/null)
+  if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null; then
+    kill "$old_pid" 2>/dev/null
+    # Wait briefly for old process to exit
+    for i in $(seq 1 10); do
+      kill -0 "$old_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+fi
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
+
 # Simple file lock (compatible with the Node.js server's locking)
 acquire_lock() {
   local attempts=0
