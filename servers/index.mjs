@@ -161,7 +161,7 @@ setInterval(() => {
 // Cleanup old messages every 5 minutes
 setInterval(cleanupMessages, 5 * 60 * 1000);
 
-const server = new McpServer({ name: "session-chat", version: "1.2.0" });
+const server = new McpServer({ name: "session-chat", version: "1.2.1" });
 
 // List active sessions
 server.tool("list_sessions", "List all active Claude Code sessions", {}, async () => {
@@ -227,17 +227,13 @@ server.tool(
     reply_to: z.string().optional().describe("Message ID this is a reply to"),
   },
   async ({ to, message, reply_to }) => {
-    // Validate target exists (unless broadcast)
+    // Warn if target session is not active (but still deliver the message)
+    let warning = "";
     if (to !== "all") {
       const sessions = lockedRead(SESSIONS_FILE, {});
       if (!sessions[to] || !isAlive(sessions[to].pid)) {
         const active = Object.keys(sessions).filter((id) => isAlive(sessions[id].pid));
-        return {
-          content: [{
-            type: "text",
-            text: `Error: session "${to}" not found. Active sessions: ${active.join(", ") || "none"}`,
-          }],
-        };
+        warning = ` (warning: "${to}" is not currently active. Active: ${active.join(", ") || "none"})`;
       }
     }
     const id = crypto.randomUUID();
@@ -253,7 +249,7 @@ server.tool(
       });
       return msgs;
     });
-    return { content: [{ type: "text", text: `Message sent to ${to}. (id: ${id})` }] };
+    return { content: [{ type: "text", text: `Message sent to ${to}. (id: ${id})${warning}` }] };
   }
 );
 
