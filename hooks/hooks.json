@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-messages.sh",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-messages.sh --poll",
             "asyncRewake": true
           }
         ]
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-messages.sh",
-            "asyncRewake": true
+            "asyncRewake": false
           }
         ]
       }
@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/check-messages.sh",
-            "asyncRewake": true
+            "asyncRewake": false
           }
         ]
       }
