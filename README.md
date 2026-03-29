@@ -65,7 +65,7 @@ Claude Code has built-in [Agent Teams](https://code.claude.com/docs/en/agent-tea
 | **Cross-project** | Sessions can run in different projects/directories and communicate across them | Same project scope |
 | **Independence** | Fully independent sessions. Join/leave anytime | Lead controls all teammates' lifecycle |
 | **Equality** | All sessions are peers, no hierarchy | Lead/teammate hierarchy |
-| **Cost** | Only pay for communication overhead | Each teammate maintains its own full context |
+| **Cost** | Same token cost as normal user chat per message | Each teammate maintains its own full context |
 | **Transparency** | All messages visible in terminal and inspectable as JSON | Internal coordination is opaque |
 | **Stability** | No experimental flags needed | Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` |
 
@@ -84,11 +84,14 @@ cd ~/projects/backend && claude --model haiku
 ## How it works
 
 - MCP server provides messaging tools via shared JSON files in `$TMPDIR/claude-session-chat/`
-- A `Stop` hook with `asyncRewake` polls for new messages every 3 seconds
-- When a message arrives, it's marked as read and Claude automatically wakes with the message content
+- `SessionStart` hook polls for new messages every 3 seconds with `asyncRewake`
+- When a message arrives, the hook delivers content directly and marks it as read — no extra tool call needed
+- `Stop` hook provides a one-shot fallback check if the poller dies
+- Token cost per message equals normal user chat (2 rounds, no duplicate context reads)
 - File locking prevents concurrent write corruption
 - Zombie sessions are purged via PID check on every heartbeat
 - Messages older than 24 hours are automatically cleaned up
+- Messages to inactive sessions are delivered with a warning (not blocked)
 
 ## License
 
