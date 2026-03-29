@@ -271,10 +271,7 @@ server.tool(
     });
     if (!mine.length) return { content: [{ type: "text", text: "No new messages." }] };
     const text = mine
-      .map((m) => {
-        const reply = m.reply_to ? ` (reply to ${m.reply_to.slice(0, 8)})` : "";
-        return `[${m.timestamp}] ${m.from}${reply}: ${m.message} [id:${m.id.slice(0, 8)}]`;
-      })
+      .map((m) => `[${m.from}] ${m.message}`)
       .join("\n");
     return { content: [{ type: "text", text }] };
   }
@@ -292,11 +289,7 @@ server.tool(
       .slice(-limit);
     if (!relevant.length) return { content: [{ type: "text", text: "No message history." }] };
     const text = relevant
-      .map((m) => {
-        const reply = m.reply_to ? ` (reply to ${m.reply_to.slice(0, 8)})` : "";
-        const status = m.read ? "" : " (unread)";
-        return `[${m.timestamp}] ${m.from} → ${m.to}${reply}: ${m.message}${status} [id:${m.id.slice(0, 8)}]`;
-      })
+      .map((m) => `${m.from}→${m.to}: ${m.message}${m.read ? "" : " *"}`)
       .join("\n");
     return { content: [{ type: "text", text }] };
   }

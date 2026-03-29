@@ -1,5 +1,5 @@
 #!/bin/bash
-# Check for unread messages and report them
+# Check for unread messages, deliver content, and mark as read
 # Usage: check-messages.sh [--poll]
 #   --poll: continuously poll every 3s until a message arrives (for asyncRewake)
 #   (default): one-shot check, exit immediately
@@ -39,7 +39,6 @@ if [ "$MODE" = "--poll" ]; then
   trap 'rm -f "$PID_FILE"' EXIT
 fi
 
-# Simple file lock (compatible with the Node.js server's locking)
 acquire_lock() {
   local attempts=0
   while [ "$attempts" -lt 50 ]; do
@@ -62,11 +61,12 @@ release_lock() {
   rm -f "$LOCK_FILE"
 }
 
-# Deliver unread messages: output them and mark as read
-deliver_messages() {
-  local unread msgs
+# Deliver unread messages: output content and mark as read in one step
+# Claude should NOT call read_messages after this - content is already delivered
+deliver() {
   [ ! -f "$MESSAGES_FILE" ] && return 1
 
+  local unread
   unread=$(jq -r --arg sid "$SESSION_ID" '
     [.[] | select(.read == false and (.to == $sid or .to == "all") and .from != $sid)]
     | length
@@ -74,12 +74,14 @@ deliver_messages() {
 
   [ "$unread" -eq 0 ] 2>/dev/null && return 1
 
+  local msgs
   msgs=$(jq -r --arg sid "$SESSION_ID" '
     [.[] | select(.read == false and (.to == $sid or .to == "all") and .from != $sid)]
     | map("[\(.from)] \(.message)")
     | join("\n")
   ' "$MESSAGES_FILE" 2>/dev/null)
 
+  # Mark as read
   if acquire_lock; then
     jq --arg sid "$SESSION_ID" '
       [.[] | if (.read == false and (.to == $sid or .to == "all") and .from != $sid)
@@ -89,25 +91,19 @@ deliver_messages() {
     release_lock
   fi
 
-  echo "📨 ${SESSION_ID} 宛のメッセージが${unread}件届きました:"
-  echo ""
   echo "$msgs"
-  echo ""
-  echo "上記のメッセージの内容に応じて対応してください。必要であれば send_message で返信してください。"
   return 0
 }
 
 if [ "$MODE" = "--poll" ]; then
-  # Polling mode: loop until a message arrives, then exit 2 to rewake Claude
   while true; do
-    if deliver_messages; then
+    if deliver; then
       exit 2
     fi
     sleep 3
   done
 else
-  # One-shot mode: check once and exit
-  if deliver_messages; then
+  if deliver; then
     exit 0
   fi
   exit 0

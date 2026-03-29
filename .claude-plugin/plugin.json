@@ -1,7 +1,7 @@
 {
   "name": "session-chat",
   "description": "Inter-session messaging for Claude Code. Send and receive messages between Claude Code sessions running in different terminal panes.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "author": {
     "name": "yutaka",
     "url": "https://github.com/verytired"
