@@ -161,137 +161,45 @@ setInterval(() => {
 // Cleanup old messages every 5 minutes
 setInterval(cleanupMessages, 5 * 60 * 1000);
 
-const server = new McpServer({ name: "session-chat", version: "1.2.1" });
+const server = new McpServer({ name: "session-chat", version: "1.2.2" });
 
-// List active sessions
-server.tool("list_sessions", "List all active Claude Code sessions", {}, async () => {
+server.tool("list_sessions", "List active sessions", {}, async () => {
   const s = lockedRead(SESSIONS_FILE, {});
   const active = Object.entries(s)
     .filter(([, v]) => isAlive(v.pid))
-    .map(([id, v]) => `${id === SESSION_ID ? "* " : "  "}${id}  (cwd: ${v.cwd})`);
+    .map(([id, v]) => `${id === SESSION_ID ? "*" : " "}${id} ${v.cwd}`);
   return {
-    content: [{
-      type: "text",
-      text: active.length
-        ? `Active sessions (* = you):\n${active.join("\n")}`
-        : "No other sessions found.",
-    }],
+    content: [{ type: "text", text: active.length ? active.join("\n") : "No sessions." }],
   };
 });
 
-// Rename session
-server.tool(
-  "rename_session",
-  "Rename this session. Updates session ID and migrates unread messages.",
-  { name: z.string().describe("New session name") },
-  async ({ name }) => {
-    const sessions = lockedRead(SESSIONS_FILE, {});
-    if (sessions[name] && isAlive(sessions[name].pid)) {
-      return { content: [{ type: "text", text: `Error: session "${name}" already exists.` }] };
-    }
-    const oldId = SESSION_ID;
-
-    lockedUpdate(SESSIONS_FILE, {}, (s) => {
-      const entry = s[oldId];
-      delete s[oldId];
-      s[name] = { ...entry, lastSeen: new Date().toISOString() };
-      return s;
-    });
-
-    let migrated = 0;
-    lockedUpdate(MESSAGES_FILE, [], (msgs) => {
-      for (const m of msgs) {
-        if (m.to === oldId && !m.read) { m.to = name; migrated++; }
-        if (m.from === oldId) { m.from = name; }
-      }
-      return msgs;
-    });
-
-    SESSION_ID = name;
-    return {
-      content: [{
-        type: "text",
-        text: `Renamed: ${oldId} → ${name}` + (migrated ? ` (${migrated} pending messages migrated)` : ""),
-      }],
-    };
-  }
-);
-
-// Send message
 server.tool(
   "send_message",
-  "Send a message to another Claude Code session",
+  "Send message to session",
   {
-    to: z.string().describe("Target session ID or 'all' for broadcast"),
+    to: z.string().describe("Target session ID or 'all'"),
     message: z.string(),
-    reply_to: z.string().optional().describe("Message ID this is a reply to"),
   },
-  async ({ to, message, reply_to }) => {
-    // Warn if target session is not active (but still deliver the message)
+  async ({ to, message }) => {
     let warning = "";
     if (to !== "all") {
       const sessions = lockedRead(SESSIONS_FILE, {});
       if (!sessions[to] || !isAlive(sessions[to].pid)) {
-        const active = Object.keys(sessions).filter((id) => isAlive(sessions[id].pid));
-        warning = ` (warning: "${to}" is not currently active. Active: ${active.join(", ") || "none"})`;
+        warning = " (inactive)";
       }
     }
-    const id = crypto.randomUUID();
     lockedUpdate(MESSAGES_FILE, [], (msgs) => {
       msgs.push({
-        id,
+        id: crypto.randomUUID(),
         from: SESSION_ID,
         to,
         message,
         timestamp: new Date().toISOString(),
         read: false,
-        ...(reply_to ? { reply_to } : {}),
       });
       return msgs;
     });
-    return { content: [{ type: "text", text: `Message sent to ${to}. (id: ${id})${warning}` }] };
-  }
-);
-
-// Read messages
-server.tool(
-  "read_messages",
-  "Read unread messages for this session",
-  { mark_read: z.boolean().optional().default(true).describe("Mark as read") },
-  async ({ mark_read }) => {
-    let mine = [];
-    lockedUpdate(MESSAGES_FILE, [], (msgs) => {
-      mine = msgs.filter(
-        (m) => !m.read && (m.to === SESSION_ID || m.to === "all") && m.from !== SESSION_ID
-      );
-      if (mark_read) {
-        for (const m of mine) m.read = true;
-      }
-      return msgs;
-    });
-    if (!mine.length) return { content: [{ type: "text", text: "No new messages." }] };
-    const text = mine
-      .map((m) => `[${m.from}] ${m.message}`)
-      .join("\n");
-    return { content: [{ type: "text", text }] };
-  }
-);
-
-// Read all message history
-server.tool(
-  "message_history",
-  "Read full message history (including read messages)",
-  { limit: z.number().optional().default(20) },
-  async ({ limit }) => {
-    const msgs = lockedRead(MESSAGES_FILE, []);
-    const relevant = msgs
-      .filter((m) => m.from === SESSION_ID || m.to === SESSION_ID || m.to === "all")
-      .slice(-limit);
-    if (!relevant.length) return { content: [{ type: "text", text: "No message history." }] };
-    const text = relevant
-      .map((m) => `${m.from}→${m.to}: ${m.message}${m.read ? "" : " *"}`)
-      .join("\n");
-    return { content: [{ type: "text", text }] };
+    return { content: [{ type: "text", text: `Sent${warning}` }] };
   }
 );
 
